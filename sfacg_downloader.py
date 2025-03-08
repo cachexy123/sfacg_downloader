@@ -4,6 +4,7 @@ import re
 import hashlib
 import json
 import uuid
+from requests.exceptions import ConnectTimeout, ConnectionError, Timeout
 
 with open('dict.json', 'r', encoding='utf-8') as file:
     dictionary = json.load(file)
@@ -51,32 +52,48 @@ def get_catalog(novel):
 def download_chapter(chapters):
     content = ""
     for chapter in chapters:
-        timestamp = int(time.time() * 1000)
-        sign = md5_hex(f"{nonce}{timestamp}{device_token}{SALT}", 'Upper')
-        headers['sfsecurity'] = f'nonce={nonce}&timestamp={timestamp}&devicetoken={device_token}&sign={sign}'
-        url = f"https://api.sfacg.com/Chaps/{chapter}?expand=content%2CneedFireMoney%2CoriginNeedFireMoney%2Ctsukkomi%2Cchatlines%2Cisbranch%2CisContentEncrypted%2CauthorTalk&autoOrder=false"
-        resp = requests.get(url, headers=headers).json()
-        if (resp['status']['httpCode'] == 200):
-            content += resp['data']['title'] + '\n'
-            tmp = ""
-            warn = ""
-            if 'content' in resp['data']:
-                tmp += resp['data']['content']
-                if 'expand' in resp['data'] and 'content' in resp['data']['expand']:
-                    tmp += resp['data']['expand']['content']
-            else:
-                tmp += resp['data']['expand']['content']
-            for char in tmp:
-                if char in dictionary:
-                    content += dictionary[char]
+        retry = 3  # 最大重试次数
+        while retry > 0:
+            try:
+                timestamp = int(time.time() * 1000)
+                sign = md5_hex(f"{nonce}{timestamp}{device_token}{SALT}", 'Upper')
+                headers['sfsecurity'] = f'nonce={nonce}&timestamp={timestamp}&devicetoken={device_token}&sign={sign}'
+                url = f"https://api.sfacg.com/Chaps/{chapter}?expand=content%2CneedFireMoney%2CoriginNeedFireMoney%2Ctsukkomi%2Cchatlines%2Cisbranch%2CisContentEncrypted%2CauthorTalk&autoOrder=false"
+                # 设置超时时间为10秒
+                resp = requests.get(url, headers=headers, timeout=10).json()
+                if resp['status']['httpCode'] == 200:
+                    content += resp['data']['title'] + '\n'
+                    tmp = ""
+                    warn = ""
+                    if 'content' in resp['data']:
+                        tmp += resp['data']['content']
+                        if 'expand' in resp['data'] and 'content' in resp['data']['expand']:
+                            tmp += resp['data']['expand']['content']
+                    else:
+                        tmp += resp['data']['expand']['content']
+                    for char in tmp:
+                        if char in dictionary:
+                            content += dictionary[char]
+                        else:
+                            # if ('\u4e00' <= char <= '\u9fff'):
+                            #     warn = '该章节有错字未替换，请检查\n'
+                            content += char
+                    content += '\n' + warn
+                    print(f"{resp['data']['title']} 已下载")
+                    break  # 成功则跳出重试循环
                 else:
-                    # if ('\u4e00' <= char <= '\u9fff'):
-                    #     warn = '该章节有错字未替换，请检查\n'
-                    content += char
-            content += '\n' + warn
-            print(f"{resp['data']['title']} 已下载")
-        else:
-            print(f"{chapter} 下载失败，请检查是否未订阅该章节")
+                    print(f"{chapter} 下载失败，HTTP状态码：{resp['status']['httpCode']}")
+                    break
+            except (ConnectTimeout, ConnectionError, Timeout) as e:
+                print(f"请求超时，剩余重试次数：{retry-1}")
+                retry -= 1
+                time.sleep(5)  # 重试前等待5秒
+            except Exception as e:
+                print(f"未知错误：{str(e)}")
+                break
+        if retry == 0:
+            print(f"{chapter} 下载失败，已达最大重试次数")
+            content += f"\n{chapter} 下载失败\n"
     return content
 
 
